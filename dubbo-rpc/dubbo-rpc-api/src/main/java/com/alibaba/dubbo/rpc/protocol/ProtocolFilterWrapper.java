@@ -45,11 +45,14 @@ public class ProtocolFilterWrapper implements Protocol {
 
     private static <T> Invoker<T> buildInvokerChain(final Invoker<T> invoker, String key, String group) {
         Invoker<T> last = invoker;
+        // 获得所有激活的Filter（已经排好序的）
         List<Filter> filters = ExtensionLoader.getExtensionLoader(Filter.class).getActivateExtension(invoker.getUrl(), key, group);
         if (!filters.isEmpty()) {
             for (int i = filters.size() - 1; i >= 0; i--) {
                 final Filter filter = filters.get(i);
+                // 复制引用，构建filter调用链
                 final Invoker<T> next = last;
+                // 这里只是构造一个最简化的Invoker作为调用链的载体Invoker
                 last = new Invoker<T>() {
 
                     @Override
@@ -85,6 +88,11 @@ public class ProtocolFilterWrapper implements Protocol {
             }
         }
         return last;
+        /*
+         * 看到上面的内容，我们大致能明白实现是这样子的，通过获取所有可以被激活的Filter链，然后根据一定顺序构造出一个Filter的调用链，
+         * 最后的调用链大致是这样子：Filter1->Filter2->Filter3->......->Invoker,这个构造Filter链的逻辑非常简单，
+         * 重点就在于如何获取被激活的Filter链
+         */
     }
 
     @Override
@@ -102,6 +110,7 @@ public class ProtocolFilterWrapper implements Protocol {
 
     @Override
     public <T> Invoker<T> refer(Class<T> type, URL url) throws RpcException {
+        // 向注册中心引用服务的时候并不会进行filter调用链
         if (Constants.REGISTRY_PROTOCOL.equals(url.getProtocol())) {
             return protocol.refer(type, url);
         }

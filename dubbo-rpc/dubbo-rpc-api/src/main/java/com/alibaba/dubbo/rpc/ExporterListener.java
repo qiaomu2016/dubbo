@@ -24,9 +24,23 @@ import com.alibaba.dubbo.common.extension.SPI;
 @SPI
 public interface ExporterListener {
 
+    /*
+     * 1、本地服务暴露过程：
+     *
+     * 本地服务暴露过程会按照 ProtocolFilterWrapper -> ProtocolListenerWrapper -> InjvmProtocol 调用顺序，
+     * 在 ProtocolListenerWrapper 中会构建 ListenerExporterWrapper 实例，在生成 ListenerExporterWrapper 实例过程中，
+     * 会对 ListenerExporterWrapper 实例中的 listeners 属性依次调用 exported 方法。
+     *
+     * 2、远程服务暴露过程：
+     *
+     * 远程暴露服务过程会按照 ProtocolFilterWrapper -> ProtocolListenerWrapper -> RegistryProtocol 调用顺序，
+     * 在 ProtocolListenerWrapper 中会构建 ListenerExporterWrapper 实例，在生成 ListenerExporterWrapper 实例过程中，
+     * 会对 ListenerExporterWrapper 实例中的 listeners 属性依次调用 exported 方法。
+     */
+
     /**
      * The exporter exported.
-     *
+     * 暴露服务后的监听/处理，在 ListenerExporterWrapper 对象进行初始化的时候就会进行调用
      * @param exporter
      * @throws RpcException
      * @see com.alibaba.dubbo.rpc.Protocol#export(Invoker)
@@ -35,7 +49,7 @@ public interface ExporterListener {
 
     /**
      * The exporter unexported.
-     *
+     * 取消暴露服务后的处理
      * @param exporter
      * @throws RpcException
      * @see com.alibaba.dubbo.rpc.Exporter#unexport()

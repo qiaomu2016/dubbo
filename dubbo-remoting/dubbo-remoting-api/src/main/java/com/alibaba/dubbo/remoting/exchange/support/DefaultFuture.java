@@ -41,6 +41,18 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 public class DefaultFuture implements ResponseFuture {
 
+    /**
+     * 在多个地方都强调过调用编号很重要，但一直没有解释原因，这里简单说明一下。
+     * 一般情况下，服务消费方会并发调用多个服务，每个用户线程发送请求后，会调用不同 DefaultFuture 对象的 get 方法进行等待。
+     * 一段时间后，服务消费方的线程池会收到多个响应对象。这个时候要考虑一个问题，如何将每个响应对象传递给相应的 DefaultFuture 对象，且不出错。
+     * 答案是通过调用编号。
+     * DefaultFuture 被创建时，会要求传入一个 Request 对象。
+     * 此时 DefaultFuture 可从 Request 对象中获取调用编号，并将 <调用编号, DefaultFuture 对象> 映射关系存入到静态 Map 中，即 FUTURES。
+     * 线程池中的线程在收到 Response 对象后，会根据 Response 对象中的调用编号到 FUTURES 集合中取出相应的 DefaultFuture 对象，然后再将 Response 对象设置到 DefaultFuture 对象中。
+     * 最后再唤醒用户线程，这样用户线程即可从 DefaultFuture 对象中获取调用结果了
+     * http://dubbo.apache.org/docs/zh-cn/source_code_guide/sources/images/request-id-application.jpg
+     */
+
     private static final Logger logger = LoggerFactory.getLogger(DefaultFuture.class);
 
     private static final Map<Long, Channel> CHANNELS = new ConcurrentHashMap<Long, Channel>();
@@ -68,9 +80,11 @@ public class DefaultFuture implements ResponseFuture {
     public DefaultFuture(Channel channel, Request request, int timeout) {
         this.channel = channel;
         this.request = request;
+        // 获取请求 id，这个 id 很重要，后面还会见到
         this.id = request.getId();
         this.timeout = timeout > 0 ? timeout : channel.getUrl().getPositiveParameter(Constants.TIMEOUT_KEY, Constants.DEFAULT_TIMEOUT);
         // put into waiting map.
+        // 存储 <requestId, DefaultFuture> 映射关系到 FUTURES 中
         FUTURES.put(id, this);
         CHANNELS.put(id, channel);
     }
@@ -115,8 +129,10 @@ public class DefaultFuture implements ResponseFuture {
 
     public static void received(Channel channel, Response response) {
         try {
+            // 根据调用编号从 FUTURES 集合中查找指定的 DefaultFuture 对象
             DefaultFuture future = FUTURES.remove(response.getId());
             if (future != null) {
+                // 继续向下调用
                 future.doReceived(response);
             } else {
                 logger.warn("The timeout response finally returned at "
@@ -140,12 +156,16 @@ public class DefaultFuture implements ResponseFuture {
         if (timeout <= 0) {
             timeout = Constants.DEFAULT_TIMEOUT;
         }
+        // 检测服务提供方是否成功返回了调用结果
         if (!isDone()) {
             long start = System.currentTimeMillis();
             lock.lock();
             try {
+                // 循环检测服务提供方是否成功返回了调用结果
                 while (!isDone()) {
+                    // 如果调用结果尚未返回，这里等待一段时间
                     done.await(timeout, TimeUnit.MILLISECONDS);
+                    // 如果调用结果成功返回，或等待超时，此时跳出 while 循环，执行后续的逻辑
                     if (isDone() || System.currentTimeMillis() - start > timeout) {
                         break;
                     }
@@ -155,11 +175,22 @@ public class DefaultFuture implements ResponseFuture {
             } finally {
                 lock.unlock();
             }
+            // 如果调用结果仍未返回，则抛出超时异常
             if (!isDone()) {
                 throw new TimeoutException(sent > 0, channel, getTimeoutMessage(false));
             }
         }
+        // 返回调用结果
         return returnFromResponse();
+
+        /*
+         * 如上，当服务消费者还未接收到调用结果时，用户线程调用 get 方法会被阻塞住。
+         * 同步调用模式下，框架获得 DefaultFuture 对象后，会立即调用 get 方法进行等待。
+         * 而异步模式下则是将该对象封装到 FutureAdapter 实例中，并将 FutureAdapter 实例设置到 RpcContext 中，供用户使用。
+         * FutureAdapter 是一个适配器，用于将 Dubbo 中的 ResponseFuture 与 JDK 中的 Future 进行适配。
+         * 这样当用户线程调用 Future 的 get 方法时，经过 FutureAdapter 适配，最终会调用 ResponseFuture 实现类对象的 get 方法，
+         * 也就是 DefaultFuture 的 get 方法。
+         */
     }
 
     public void cancel() {
@@ -172,6 +203,7 @@ public class DefaultFuture implements ResponseFuture {
 
     @Override
     public boolean isDone() {
+        // 通过检测 response 字段为空与否，判断是否收到了调用结果
         return response != null;
     }
 
@@ -236,9 +268,11 @@ public class DefaultFuture implements ResponseFuture {
         if (res == null) {
             throw new IllegalStateException("response cannot be null");
         }
+        // 如果调用结果的状态为 Response.OK，则表示调用过程正常，服务提供方成功返回了调用结果
         if (res.getStatus() == Response.OK) {
             return res.getResult();
         }
+        // 抛出异常
         if (res.getStatus() == Response.CLIENT_TIMEOUT || res.getStatus() == Response.SERVER_TIMEOUT) {
             throw new TimeoutException(res.getStatus() == Response.SERVER_TIMEOUT, channel, res.getErrorMessage());
         }
@@ -276,8 +310,10 @@ public class DefaultFuture implements ResponseFuture {
     private void doReceived(Response res) {
         lock.lock();
         try {
+            // 保存响应对象
             response = res;
             if (done != null) {
+                // 唤醒用户线程
                 done.signal();
             }
         } finally {
